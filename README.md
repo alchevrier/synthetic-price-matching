@@ -1,6 +1,6 @@
 # Synthetic price matching
 
-A repository to understand on a simple use-case of synthetic price matching the key differences in performance between: Unsafe (direct memory access mechanism to be deprecated), Panama (new API to access off-heap memory), Map (classic way of storing data - not used on the hot path due to performance).
+A repository to understand on a simple use-case of synthetic price matching the key differences in performance between: Unsafe (direct memory access mechanism to be deprecated), Panama (new API to access off-heap memory), VarHandle (standard API to control memory ordering semantics), Map (classic way of storing data - not used on the hot path due to performance).
 
 This is not simulating a real production scenario as in reality there will be multiple threads in contention for the data as well as hardware side-effects. This is just meant to validate the correct use of API for the job. Absolute numbers depend on the environment in which the code runs and must be interpreted accordingly.
 
@@ -8,8 +8,9 @@ This is not simulating a real production scenario as in reality there will be mu
 
 We are implementing the following:
 - ArenaSyntheticPriceMatching (new API to access off-heap memory)
-- MapSyntheticPriceMatching (classic way of storing data).
+- MapSyntheticPriceMatching (classic way of storing data)
 - UnsafeSyntheticPriceMatching (direct memory access mechanism to be deprecated)
+- VarHandleSyntheticPriceMatching (standard API allowing precise control of memory ordering: plain, acquire, volatile)
 
 ### Key Decisions
 
@@ -38,11 +39,18 @@ Results below were collected on a Windows development machine (JDK 25.0.2), 5 fo
 
 | Benchmark | Mean (ns) | p90 (ns) | p99 (ns) | p99.9 (ns) | p100 (ns) |
 |---|---|---|---|---|---|
-| `UnsafeSyntheticPriceMatching` | 185 | 200 | 300 | 900 | 2,215,936 |
-| `ArenaSyntheticPriceMatching` | 189 | 200 | 300 | 800 | 930,816 |
-| `MapSyntheticPriceMatching` | 209 | 300 | 600 | 2,200 | 5,816,320 |
+| `ArenaSyntheticPriceMatching` | 183 | 200 | 300 | 700 | 449,024 |
+| `VarHandleSyntheticPriceMatching.priceAtVolatile` | 183 | 200 | 300 | 700 | 907,264 |
+| `UnsafeSyntheticPriceMatching` | 184 | 200 | 300 | 800 | 254,208 |
+| `VarHandleSyntheticPriceMatching.priceAtAcquire` | 187 | 200 | 300 | 800 | 419,328 |
+| `MapSyntheticPriceMatching` | 200 | 300 | 600 | 1,000 | 3,649,536 |
+| `VarHandleSyntheticPriceMatching.priceAtPlain` | 215 | 200 | 300 | 800 | 23,068,672 |
 
-`Unsafe` and `Arena` are statistically indistinguishable up to p99.9. The separation from `HashMap` begins at p90 and widens through the tail: p99.9 is ~2.5x worse for `HashMap`, and p100 is ~6x worse — consistent with GC pauses on boxed heap objects that off-heap layouts avoid entirely.
+`Arena`, `Unsafe`, `getAcquire`, and `getVolatile` are statistically indistinguishable up to p99.9 — the access API does not matter; the memory layout (contiguous unboxed array vs boxed heap objects) does. On x86 (TSO memory model), `getVolatile` and `getAcquire` cost the same up to p99.9 because load-acquire is free on x86; the difference only surfaces at p100.
 
-The mean difference (~12%) is not the story. The tail is.
+`plain` is counter-intuitively the worst: no ordering hint leaves the JIT and CPU more exposed to reordering and cache-line interference, producing a p100 of 23M ns — an order of magnitude worse than the fenced variants.
+
+`HashMap` separation begins at p90 and reflects GC pauses on boxed heap objects that off-heap layouts avoid entirely.
+
+The mean difference is not the story. The tail is.
 
